@@ -596,6 +596,67 @@ static char * wpa_config_write_psk(const struct parse_data *data,
 }
 #endif /* NO_CONFIG_WRITE */
 
+static int wpa_config_parse_psk_cmd(const struct parse_data *data,
+				struct wpa_ssid *ssid, int line,
+				const char *value)
+{
+	if (*value != '"') {
+		wpa_printf(MSG_ERROR, "Line %d: missing quotes in psk_cmd", line);
+		return -1;
+	}
+	value++;
+	const char* pos = os_strrchr(value, '"');
+	if (!pos) {
+		wpa_printf(MSG_ERROR, "Line %d: missing terminating quote in psk_cmd", line);
+		return -1;
+	}
+	size_t len = pos - value;
+	char *mutable_value = os_strdup(value);
+	if (mutable_value == NULL)
+		return -1;
+
+	mutable_value[len] = '\0';
+
+	ssid->psk_set = 0;
+	str_clear_free(ssid->passphrase);
+
+	FILE *p = popen(mutable_value, "r");
+	if (p == NULL) {
+		wpa_printf(MSG_ERROR, "Line %d: failed to execute command", line);
+		os_free(mutable_value);
+		return -1;
+	}
+
+	char buf[2048] = { 0 };
+	if (NULL == fgets(buf, 2048, p)) {
+		wpa_printf(MSG_ERROR, "Line %d: failed to execute command", line);
+		os_free(mutable_value);
+		return -1;
+	}
+
+	os_free(mutable_value);
+	ssid->passphrase = dup_binstr(value, len);
+
+	if (0 != pclose(p)) {
+		wpa_printf(MSG_ERROR, "Line %d: failed to execute command", line);
+		str_clear_free(ssid->passphrase);
+		return -1;
+	}
+
+	if (NULL == ssid->passphrase)
+		return -1;
+	return 0;
+}
+
+#ifndef NO_CONFIG_WRITE
+static char * wpa_config_write_psk_cmd(const struct parse_data *data,
+					 struct wpa_ssid *ssid)
+{
+	// FIXME: unsupported.
+
+	return NULL;
+}
+#endif /* NO_CONFIG_WRITE */
 
 static int wpa_config_parse_proto(const struct parse_data *data,
 				  struct wpa_ssid *ssid, int line,
@@ -1658,6 +1719,48 @@ static int wpa_config_parse_password(const struct parse_data *data,
 	return 0;
 }
 
+static int wpa_config_parse_password_cmd(const struct parse_data *data,
+						 struct wpa_ssid *ssid, int line,
+						 const char *value)
+{
+	size_t len;
+	char *tmp = wpa_config_parse_string(value, &len);
+
+	if (tmp == NULL) {
+		wpa_printf(MSG_ERROR, "Line %d: failed to parse password_cmd", line);
+		return -1;
+	}
+
+	FILE *p = popen(tmp, "r");
+	if (p == NULL) {
+		wpa_printf(MSG_ERROR, "Line %d: failed to execute command", line);
+		return -1;
+	}
+
+	char buf[2048] = { 0 };
+	if (NULL == fgets(buf, 2048, p)) {
+		wpa_printf(MSG_ERROR, "Line %d: failed to execute command", line);
+		return -1;
+	}
+
+	size_t buflen = os_strlen(buf) - 1;
+
+	bin_clear_free(ssid->eap.password, ssid->eap.password_len);
+	ssid->eap.password = (u8*)strndup(buf, buflen);
+	ssid->eap.password_len = buflen;
+	ssid->eap.flags &= ~EAP_CONFIG_FLAGS_PASSWORD_NTHASH;
+	ssid->eap.flags &= ~EAP_CONFIG_FLAGS_EXT_PASSWORD;
+
+	if (0 != pclose(p)) {
+		wpa_printf(MSG_ERROR, "Line %d: failed to execute command", line);
+		str_clear_free(ssid->passphrase);
+		return -1;
+	}
+
+	if (NULL == ssid->eap.password)
+		return -1;
+	return 0;
+}
 
 #ifndef NO_CONFIG_WRITE
 static char * wpa_config_write_password(const struct parse_data *data,
@@ -1692,6 +1795,16 @@ static char * wpa_config_write_password(const struct parse_data *data,
 	wpa_snprintf_hex(buf + 5, 32 + 1, ssid->eap.password, 16);
 
 	return buf;
+}
+#endif /* NO_CONFIG_WRITE */
+
+#ifndef NO_CONFIG_WRITE
+static char * wpa_config_write_password_cmd(const struct parse_data *data,
+					struct wpa_ssid *ssid)
+{
+	// FIXME: unsupported
+
+	return NULL;
 }
 #endif /* NO_CONFIG_WRITE */
 #endif /* IEEE8021X_EAPOL */
@@ -2148,6 +2261,7 @@ static const struct parse_data ssid_fields[] = {
 	{ FUNC(bssid_blacklist) },
 	{ FUNC(bssid_whitelist) },
 	{ FUNC_KEY(psk) },
+	{ FUNC_KEY(psk_cmd) },
 	{ INT(mem_only_psk) },
 	{ STR_KEY(sae_password) },
 	{ STR(sae_password_id) },
@@ -2173,6 +2287,7 @@ static const struct parse_data ssid_fields[] = {
 	{ STR_LENe(anonymous_identity) },
 	{ STR_LENe(imsi_identity) },
 	{ FUNC_KEY(password) },
+	{ FUNC_KEY(password_cmd) },
 	{ STRe(ca_cert) },
 	{ STRe(ca_path) },
 	{ STRe(client_cert) },
